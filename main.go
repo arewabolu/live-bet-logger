@@ -7,6 +7,8 @@ import (
 	"log"
 	"log/slog"
 	"os"
+	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -134,8 +136,10 @@ func (mObj MatchObjects) convertToMatchEvent() MatchEvents {
 func main() {
 	var sport string
 	var timeout uint
-	flag.StringVar(&sport, "s", "football", "Use to specify sport default is football")
+	var limit int
+	flag.StringVar(&sport, "s", "football", "Use to specify sport.")
 	flag.UintVar(&timeout, "t", 30, "set timeout to get alerts in seconds")
+	flag.IntVar(&limit, "limit", 75, "set minimum match time to filter for odds \n range is between 1 and 90")
 	flag.Parse()
 
 	ticker := time.NewTicker(5 * time.Minute)
@@ -146,50 +150,96 @@ func main() {
 	})
 	logger := slog.New(handler)
 
+	html := visitSite(url, timeout)
+	dom := createDOM(html)
+	matchEvents := SeperateObjects(dom)
+	logLine(matchEvents, limit, logger)
+
 	go func() {
 		for range ticker.C {
 			html := visitSite(url, timeout)
 			dom := createDOM(html)
 			matchEvents := SeperateObjects(dom)
-			logLine(matchEvents, logger)
+			logLine(matchEvents, limit, logger)
 		}
 
 	}()
 	select {}
 }
 
-func logLine(allEvents []MatchObjects, log *slog.Logger) {
-	events := validateMatchObjects(allEvents)
+func clearTerm() error {
+	var cmd *exec.Cmd
+
+	// Use the appropriate clear command based on the operating system
+	switch runtime.GOOS {
+	case "linux", "darwin":
+		cmd = exec.Command("clear")
+	case "windows":
+		cmd = exec.Command("cmd", "/c", "cls")
+	}
+
+	// Set the correct output device for the command
+	cmd.Stdout = os.Stdout
+
+	// Run the command
+	if err := cmd.Run(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func logLine(allEvents []MatchObjects, limit int, log *slog.Logger) {
+	err := clearTerm()
+	if err != nil {
+		log.Error(err.Error())
+	}
+	events := validateMatchObjects(limit, allEvents)
 	for _, event := range events {
 		goalDiff := event.homeTeamScore - event.awayTeamScore
 		switch {
 		case goalDiff > 0:
-			if event.homeWin < 1.2 && event.homeWin > 0 || event.anyTeamWin < 1.2 && event.anyTeamWin > 0 || event.homeWinOrDraw < 1.2 && event.homeWinOrDraw > 0 {
-				printOut := fmt.Sprintf("%s\n%s vs %s  has result: %d-%d\npotential bets:\n 1:%.2f 1X:%.2f 12:%.2f\n", event.league, event.homeTeam, event.awayTeam, event.homeTeamScore, event.awayTeamScore, event.homeWin, event.homeWinOrDraw, event.anyTeamWin)
+			switch {
+			case event.homeWin <= 1.2 && event.homeWin > 1.02:
+				printOut := fmt.Sprintf("%s\n%s vs %s  has result:\t %d-%d\npotential bets: W1:%.2f 12:%.2f\n", event.league, event.homeTeam, event.awayTeam, event.homeTeamScore, event.awayTeamScore, event.homeWin, event.anyTeamWin)
+				slog.Info(printOut)
+			case event.homeWinOrDraw <= 1.2 && event.homeWinOrDraw > 1.02:
+				printOut := fmt.Sprintf("%s\n%s vs %s  has result:\t %d-%d\npotential bets: 1X:%.2f 12:%.2f\n", event.league, event.homeTeam, event.awayTeam, event.homeTeamScore, event.awayTeamScore, event.homeWinOrDraw, event.anyTeamWin)
 				slog.Info(printOut)
 			}
-		case goalDiff == 0 && event.Time > 65:
-			if event.straightDraw < 1.2 && event.straightDraw > 0 || event.awayWinOrDraw < 1.2 && event.awayWinOrDraw > 0 || event.homeWinOrDraw < 1.2 && event.homeWinOrDraw > 0 {
-				printOut := fmt.Sprintf("%s\n%s vs %s has result: %d-%d\npotential bets:\n X:%.2f 1X:%.2f 2X:%.2f\n", event.league, event.homeTeam, event.awayTeam, event.homeTeamScore, event.awayTeamScore, event.straightDraw, event.homeWinOrDraw, event.awayWinOrDraw)
+
+		case goalDiff == 0:
+			switch {
+			case event.straightDraw <= 1.4 && event.straightDraw > 1.02:
+				printOut := fmt.Sprintf("%s\n%s vs %s has result:\t %d-%d\npotential bets: X:%.2f 1X:%.2f 2X:%.2f\n", event.league, event.homeTeam, event.awayTeam, event.homeTeamScore, event.awayTeamScore, event.straightDraw, event.homeWinOrDraw, event.awayWinOrDraw)
+				slog.Info(printOut)
+			case event.homeWinOrDraw <= 1.2 && event.homeWinOrDraw > 1.02:
+				printOut := fmt.Sprintf("%s\n%s vs %s  has result:\t %d-%d\npotential bets: 1X:%.2f \n", event.league, event.homeTeam, event.awayTeam, event.homeTeamScore, event.awayTeamScore, event.homeWinOrDraw)
+				slog.Info(printOut)
+			case event.awayWinOrDraw <= 1.2 && event.awayWinOrDraw > 1.02:
+				printOut := fmt.Sprintf("%s\n%s vs %s  has result:\t %d-%d\npotential bets: 2X:%.2f \n", event.league, event.homeTeam, event.awayTeam, event.homeTeamScore, event.awayTeamScore, event.awayWinOrDraw)
 				slog.Info(printOut)
 			}
 		case goalDiff < 0:
-			if event.awayWin < 1.2 && event.awayWin > 0 || event.anyTeamWin < 1.2 && event.anyTeamWin > 0 || event.awayWinOrDraw < 1.2 && event.awayWinOrDraw > 0 {
-				printOut := fmt.Sprintf("%s\n%s vs %s has result: %d-%d\npotential bets:\n 2:%.2f 2X:%.2f 12:%.2f\n", event.league, event.homeTeam, event.awayTeam, event.homeTeamScore, event.awayTeamScore, event.awayWin, event.awayWinOrDraw, event.anyTeamWin)
+			switch {
+			case event.awayWin <= 1.2 && event.awayWin > 1.02:
+				printOut := fmt.Sprintf("%s\n%s vs %s  has result:\t %d-%d\npotential bets: W2:%.2f 12:%.2f\n", event.league, event.homeTeam, event.awayTeam, event.homeTeamScore, event.awayTeamScore, event.awayWin, event.anyTeamWin)
+				slog.Info(printOut)
+			case event.awayWinOrDraw <= 1.2 && event.awayWinOrDraw > 1.02:
+				printOut := fmt.Sprintf("%s\n%s vs %s  has result:\t %d-%d\npotential bets: 2X:%.2f 12:%.2f\n", event.league, event.homeTeam, event.awayTeam, event.homeTeamScore, event.awayTeamScore, event.awayWinOrDraw, event.anyTeamWin)
 				slog.Info(printOut)
 			}
 		}
 	}
 }
 
-func validateMatchObjects(allEvents []MatchObjects) []MatchEvents {
+func validateMatchObjects(limit int, allEvents []MatchObjects) []MatchEvents {
 	events := make([]MatchEvents, 0)
 	for _, event := range allEvents {
 		if event.Time < 1 {
 			continue
 		}
 		nwEvent := event.convertToMatchEvent()
-		if event.Time > 35 && event.Time < 90 {
+		if event.Time > limit && event.Time < 90 {
 			if nwEvent.homeWin < 1.2 || nwEvent.straightDraw < 1.2 || nwEvent.awayWin < 1.2 || nwEvent.homeWinOrDraw < 1.2 || nwEvent.anyTeamWin < 1.2 || nwEvent.awayWinOrDraw < 1.2 {
 				events = append(events, nwEvent)
 			}
