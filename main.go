@@ -17,6 +17,13 @@ import (
 	"github.com/chromedp/chromedp"
 )
 
+type Flags struct {
+	sport         string
+	limit         int
+	lowerLimitOdd float64
+	upperLimitOdd float64
+}
+
 type MatchObjects struct {
 	league        string
 	Time          int
@@ -134,17 +141,18 @@ func (mObj MatchObjects) convertToMatchEvent() MatchEvents {
 }
 
 func main() {
-	var sport string
+	var flags Flags
 	var timeout uint
-	var limit int
-	flag.StringVar(&sport, "s", "football", "Use to specify sport.")
+	flag.StringVar(&flags.sport, "s", "football", "Use to specify sport.")
 	flag.UintVar(&timeout, "t", 30, "set timeout to get alerts in seconds")
-	flag.IntVar(&limit, "limit", 75, "set minimum match time to filter for odds \n range is between 1 and 90")
+	flag.Float64Var(&flags.lowerLimitOdd, "L", 1.08, "set lower limit to filter odds.")
+	flag.Float64Var(&flags.upperLimitOdd, "U", 1.20, "set upper limit to filter odds.")
+	flag.IntVar(&flags.limit, "limit", 75, "set minimum match time to filter for odds \n range is between 1 and 90")
 	flag.Parse()
 
 	ticker := time.NewTicker(5 * time.Minute)
 
-	url := fmt.Sprintf("https://22bet.ng/en/live/%s", sport)
+	url := fmt.Sprintf("https://22bet.ng/en/live/%s", flags.sport)
 	handler := slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
 	})
@@ -153,14 +161,14 @@ func main() {
 	html := visitSite(url, timeout)
 	dom := createDOM(html)
 	matchEvents := SeperateObjects(dom)
-	logLine(matchEvents, limit, logger)
+	logLine(matchEvents, flags, logger)
 
 	go func() {
 		for range ticker.C {
 			html := visitSite(url, timeout)
 			dom := createDOM(html)
 			matchEvents := SeperateObjects(dom)
-			logLine(matchEvents, limit, logger)
+			logLine(matchEvents, flags, logger)
 		}
 
 	}()
@@ -188,43 +196,44 @@ func clearTerm() error {
 	return nil
 }
 
-func logLine(allEvents []MatchObjects, limit int, log *slog.Logger) {
+func logLine(allEvents []MatchObjects, flags Flags, log *slog.Logger) {
 	err := clearTerm()
 	if err != nil {
 		log.Error(err.Error())
 	}
-	events := validateMatchObjects(limit, allEvents)
+	events := validateMatchObjects(flags.limit, allEvents)
 	for _, event := range events {
 		goalDiff := event.homeTeamScore - event.awayTeamScore
 		switch {
 		case goalDiff > 0:
 			switch {
-			case event.homeWin <= 1.2 && event.homeWin > 1.02:
+			case validateOdds(event.homeWin, flags.lowerLimitOdd, flags.upperLimitOdd):
 				printOut := fmt.Sprintf("%s\n%s vs %s  has result:\t %d-%d\npotential bets: W1:%.2f 12:%.2f\n", event.league, event.homeTeam, event.awayTeam, event.homeTeamScore, event.awayTeamScore, event.homeWin, event.anyTeamWin)
 				slog.Info(printOut)
-			case event.homeWinOrDraw <= 1.2 && event.homeWinOrDraw > 1.02:
+			case validateOdds(event.homeWinOrDraw, flags.lowerLimitOdd, flags.upperLimitOdd):
 				printOut := fmt.Sprintf("%s\n%s vs %s  has result:\t %d-%d\npotential bets: 1X:%.2f 12:%.2f\n", event.league, event.homeTeam, event.awayTeam, event.homeTeamScore, event.awayTeamScore, event.homeWinOrDraw, event.anyTeamWin)
 				slog.Info(printOut)
 			}
 
 		case goalDiff == 0:
 			switch {
-			case event.straightDraw <= 1.4 && event.straightDraw > 1.02:
+			case validateOdds(event.straightDraw, flags.lowerLimitOdd, flags.upperLimitOdd):
 				printOut := fmt.Sprintf("%s\n%s vs %s has result:\t %d-%d\npotential bets: X:%.2f 1X:%.2f 2X:%.2f\n", event.league, event.homeTeam, event.awayTeam, event.homeTeamScore, event.awayTeamScore, event.straightDraw, event.homeWinOrDraw, event.awayWinOrDraw)
 				slog.Info(printOut)
-			case event.homeWinOrDraw <= 1.2 && event.homeWinOrDraw > 1.02:
+			case validateOdds(event.homeWinOrDraw, flags.lowerLimitOdd, flags.upperLimitOdd):
 				printOut := fmt.Sprintf("%s\n%s vs %s  has result:\t %d-%d\npotential bets: 1X:%.2f \n", event.league, event.homeTeam, event.awayTeam, event.homeTeamScore, event.awayTeamScore, event.homeWinOrDraw)
 				slog.Info(printOut)
-			case event.awayWinOrDraw <= 1.2 && event.awayWinOrDraw > 1.02:
+			case validateOdds(event.awayWinOrDraw, flags.lowerLimitOdd, flags.upperLimitOdd):
 				printOut := fmt.Sprintf("%s\n%s vs %s  has result:\t %d-%d\npotential bets: 2X:%.2f \n", event.league, event.homeTeam, event.awayTeam, event.homeTeamScore, event.awayTeamScore, event.awayWinOrDraw)
 				slog.Info(printOut)
 			}
+
 		case goalDiff < 0:
 			switch {
-			case event.awayWin <= 1.2 && event.awayWin > 1.02:
+			case validateOdds(event.awayWin, flags.lowerLimitOdd, flags.upperLimitOdd):
 				printOut := fmt.Sprintf("%s\n%s vs %s  has result:\t %d-%d\npotential bets: W2:%.2f 12:%.2f\n", event.league, event.homeTeam, event.awayTeam, event.homeTeamScore, event.awayTeamScore, event.awayWin, event.anyTeamWin)
 				slog.Info(printOut)
-			case event.awayWinOrDraw <= 1.2 && event.awayWinOrDraw > 1.02:
+			case validateOdds(event.awayWinOrDraw, flags.lowerLimitOdd, flags.upperLimitOdd):
 				printOut := fmt.Sprintf("%s\n%s vs %s  has result:\t %d-%d\npotential bets: 2X:%.2f 12:%.2f\n", event.league, event.homeTeam, event.awayTeam, event.homeTeamScore, event.awayTeamScore, event.awayWinOrDraw, event.anyTeamWin)
 				slog.Info(printOut)
 			}
@@ -246,6 +255,13 @@ func validateMatchObjects(limit int, allEvents []MatchObjects) []MatchEvents {
 		}
 	}
 	return events
+}
+
+func validateOdds(eventOdd float64, lowerLimit float64, upperLimit float64) bool {
+	if eventOdd >= lowerLimit && eventOdd <= upperLimit {
+		return true
+	}
+	return false
 }
 
 func visitSite(url string, timeout uint) string {
